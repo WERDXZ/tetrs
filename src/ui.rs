@@ -634,7 +634,6 @@ pub fn render_versus(
             render_waiting_screen(frame, area, "Disconnected", None);
         }
         _ => {
-            // Fallback for any future states
             render_game(frame, game, settings);
         }
     }

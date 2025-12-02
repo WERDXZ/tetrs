@@ -1,9 +1,9 @@
 [package]
 name = "tetrs"
-version = "0.1.0"
+version = "1.0.0-alpha"
 edition = "2024"
 description = "A Rusty Tetris CLI - proving Rust superiority one block at a time"
-authors = ["Your Name"]
+authors = ["Claude from Anthropics", "werdxz"]
 
 [dependencies]
 ratatui = "0.29"

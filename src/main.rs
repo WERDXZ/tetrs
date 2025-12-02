@@ -2,6 +2,9 @@
 //!
 //! Proving Rust superiority one block at a time.
 
+// Allow unreachable patterns due to #[non_exhaustive] enums for future compatibility
+#![allow(unreachable_patterns)]
+
 mod audio;
 mod bag;
 mod board;
@@ -141,7 +144,6 @@ fn run_app(
     let mut last_game: Option<Game> = None;
     let mut last_countdown: Option<u8> = None;
     let mut last_action_text: Option<String> = None;
-    let mut countdown_start: Option<std::time::Instant> = None;
 
     loop {
         // Render
@@ -396,19 +398,9 @@ fn run_app(
                         }
                         AppState::Versus(game, input, session) => {
                             // Handle lobby ready-up
-                            if let multiplayer::ConnectionState::Lobby { we_ready, they_ready } = session.state {
-                                if !we_ready && (key.code == KeyCode::Enter || key.code == KeyCode::Char(' ')) {
-                                    session.state = multiplayer::ConnectionState::Lobby {
-                                        we_ready: true,
-                                        they_ready,
-                                    };
-                                    session.send(multiplayer::GameMessage::Ready);
-                                    // If both ready now, host starts countdown
-                                    if they_ready && session.role == Role::Host {
-                                        countdown_start = Some(std::time::Instant::now());
-                                        session.state = multiplayer::ConnectionState::Countdown { value: 3 };
-                                        session.send(multiplayer::GameMessage::Countdown { value: 3 });
-                                    }
+                            if matches!(session.state, multiplayer::ConnectionState::Lobby { .. }) {
+                                if key.code == KeyCode::Enter || key.code == KeyCode::Char(' ') {
+                                    session.set_ready();
                                 }
                             }
 
@@ -578,28 +570,10 @@ fn run_app(
                             *game = Game::with_seed(GameMode::Versus, seed);
                         }
                         NetEvent::OpponentReady => {
-                            // Opponent is ready - update lobby state
-                            if let multiplayer::ConnectionState::Lobby { we_ready, .. } = session.state {
-                                session.state = multiplayer::ConnectionState::Lobby {
-                                    we_ready,
-                                    they_ready: true,
-                                };
-                                // If both ready, host starts countdown
-                                if we_ready && session.role == Role::Host {
-                                    countdown_start = Some(std::time::Instant::now());
-                                    session.state = multiplayer::ConnectionState::Countdown { value: 3 };
-                                    session.send(multiplayer::GameMessage::Countdown { value: 3 });
-                                }
-                            }
+                            session.set_opponent_ready();
                         }
                         NetEvent::Countdown { value } => {
-                            // Guest receives countdown from host
-                            if value == 0 {
-                                session.state = multiplayer::ConnectionState::Playing;
-                                countdown_start = None;
-                            } else {
-                                session.state = multiplayer::ConnectionState::Countdown { value };
-                            }
+                            session.receive_countdown(value);
                         }
                         NetEvent::BoardUpdate { cells, score, lines, level } => {
                             session.opponent.update_from_message(&cells, score, lines, level);
@@ -607,15 +581,17 @@ fn run_app(
                         NetEvent::GarbageReceived { lines } => {
                             session.pending_garbage += lines;
                         }
-                        NetEvent::OpponentGameOver { final_score: _ } => {
-                            // We win!
+                        NetEvent::OpponentGameOver { final_score } => {
+                            tracing::info!("Opponent game over with score {}", final_score);
                             session.opponent.game_over = true;
                             session.state = multiplayer::ConnectionState::GameOver { we_won: true };
                         }
-                        NetEvent::Disconnected { reason: _ } => {
+                        NetEvent::Disconnected { reason } => {
+                            tracing::info!("Disconnected: {}", reason);
                             session.state = multiplayer::ConnectionState::GameOver { we_won: true };
                         }
-                        NetEvent::Error { message: _ } => {
+                        NetEvent::Error { message } => {
+                            tracing::error!("Network error: {}", message);
                             session.state = multiplayer::ConnectionState::Disconnected;
                         }
                     }
@@ -633,13 +609,8 @@ fn run_app(
                             they_ready: false,
                         };
                     }
-                    multiplayer::ConnectionState::Lobby { we_ready, they_ready } => {
-                        // Lobby state - waiting for both players to ready up
-                        // Input handling is done in the input section below
-                        // Check if both ready (guest side - host handles this in OpponentReady)
-                        if *we_ready && *they_ready && session.role == Role::Guest {
-                            // Guest waits for host to send countdown
-                        }
+                    multiplayer::ConnectionState::Lobby { .. } => {
+                        // Waiting for both players to ready up (input handled above)
                     }
                     multiplayer::ConnectionState::Countdown { value } => {
                         // Play sound on countdown change
@@ -655,22 +626,7 @@ fn run_app(
                         }
 
                         // Host drives the countdown timer
-                        if session.role == Role::Host {
-                            if let Some(start) = countdown_start {
-                                let elapsed = start.elapsed().as_secs();
-                                let new_value = 3u8.saturating_sub(elapsed as u8);
-                                if new_value != *value {
-                                    if new_value == 0 {
-                                        session.state = multiplayer::ConnectionState::Playing;
-                                        session.send(multiplayer::GameMessage::Countdown { value: 0 });
-                                        countdown_start = None;
-                                    } else {
-                                        session.state = multiplayer::ConnectionState::Countdown { value: new_value };
-                                        session.send(multiplayer::GameMessage::Countdown { value: new_value });
-                                    }
-                                }
-                            }
-                        }
+                        session.update_countdown();
                     }
                     multiplayer::ConnectionState::Playing => {
                         last_countdown = None;

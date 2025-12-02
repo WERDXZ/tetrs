@@ -222,6 +222,8 @@ pub struct MultiplayerSession {
     pub game_seed: u64,
     /// Pending garbage lines to add
     pub pending_garbage: u8,
+    /// Countdown timer start (host only)
+    countdown_start: Option<std::time::Instant>,
     /// Channel to send commands to network task
     cmd_tx: Option<mpsc::Sender<NetCommand>>,
     /// Channel to receive events from network task
@@ -236,8 +238,87 @@ impl MultiplayerSession {
             opponent: OpponentState::default(),
             game_seed: 0,
             pending_garbage: 0,
+            countdown_start: None,
             cmd_tx: None,
             event_rx: None,
+        }
+    }
+
+    /// Mark ourselves as ready in the lobby, returns true if countdown should start
+    pub fn set_ready(&mut self) -> bool {
+        if let ConnectionState::Lobby { we_ready, they_ready } = self.state {
+            if we_ready {
+                return false; // Already ready
+            }
+            self.state = ConnectionState::Lobby { we_ready: true, they_ready };
+            self.send(GameMessage::Ready);
+
+            // If both ready and we're host, start countdown
+            if they_ready && self.role == Role::Host {
+                self.start_countdown();
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Mark opponent as ready, returns true if countdown should start
+    pub fn set_opponent_ready(&mut self) -> bool {
+        if let ConnectionState::Lobby { we_ready, .. } = self.state {
+            self.state = ConnectionState::Lobby { we_ready, they_ready: true };
+
+            // If both ready and we're host, start countdown
+            if we_ready && self.role == Role::Host {
+                self.start_countdown();
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Start the countdown (host only)
+    fn start_countdown(&mut self) {
+        self.countdown_start = Some(std::time::Instant::now());
+        self.state = ConnectionState::Countdown { value: 3 };
+        self.send(GameMessage::Countdown { value: 3 });
+    }
+
+    /// Update countdown timer (host only), returns new value if changed
+    pub fn update_countdown(&mut self) -> Option<u8> {
+        if self.role != Role::Host {
+            return None;
+        }
+
+        let ConnectionState::Countdown { value } = self.state else {
+            return None;
+        };
+
+        let Some(start) = self.countdown_start else {
+            return None;
+        };
+
+        let elapsed = start.elapsed().as_secs();
+        let new_value = 3u8.saturating_sub(elapsed as u8);
+
+        if new_value != value {
+            if new_value == 0 {
+                self.state = ConnectionState::Playing;
+                self.countdown_start = None;
+            } else {
+                self.state = ConnectionState::Countdown { value: new_value };
+            }
+            self.send(GameMessage::Countdown { value: new_value });
+            return Some(new_value);
+        }
+        None
+    }
+
+    /// Handle incoming countdown from host (guest only)
+    pub fn receive_countdown(&mut self, value: u8) {
+        if value == 0 {
+            self.state = ConnectionState::Playing;
+        } else {
+            self.state = ConnectionState::Countdown { value };
         }
     }
 
@@ -570,13 +651,7 @@ pub async fn join_game(
         let _ = event_tx.send(NetEvent::SeedReceived { seed });
     }
 
-    // Send ready
-    info!("Guest sending ready");
-    let ready = encode_message(&GameMessage::Ready);
-    send.write_all(&ready).await
-        .map_err(|e| format!("Failed to send ready: {}", e))?;
-
-    // Main communication loop
+    // Main communication loop (lobby ready is handled by game logic)
     info!("Guest entering message loop");
     message_loop(send, recv, event_tx, cmd_rx).await
 }
