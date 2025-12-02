@@ -1,14 +1,16 @@
-//! Game modes: Marathon, Sprint, Ultra
+//! Game modes: Marathon, Sprint, Ultra, Versus
 
 use std::time::{Duration, Instant};
 
 /// Available game modes
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GameMode {
     #[default]
     Marathon, // Endless, level increases every 10 lines
     Sprint,   // Clear 40 lines as fast as possible
     Ultra,    // Score as much as possible in 3 minutes
+    Versus,   // Multiplayer battle mode
 }
 
 impl GameMode {
@@ -17,6 +19,8 @@ impl GameMode {
             GameMode::Marathon => "Marathon",
             GameMode::Sprint => "Sprint",
             GameMode::Ultra => "Ultra",
+            GameMode::Versus => "Versus",
+            _ => "Unknown",
         }
     }
 
@@ -25,6 +29,8 @@ impl GameMode {
             GameMode::Marathon => "Endless mode - level up every 10 lines",
             GameMode::Sprint => "Clear 40 lines as fast as possible",
             GameMode::Ultra => "Score as much as you can in 3 minutes",
+            GameMode::Versus => "Battle another player online",
+            _ => "",
         }
     }
 
@@ -33,11 +39,22 @@ impl GameMode {
             GameMode::Marathon => 1,
             GameMode::Sprint => 5,
             GameMode::Ultra => 5,
+            GameMode::Versus => 1,
+            _ => 1,
         }
     }
 
-    pub fn all() -> &'static [GameMode] {
+    /// Single-player modes only
+    pub fn single_player() -> &'static [GameMode] {
         &[GameMode::Marathon, GameMode::Sprint, GameMode::Ultra]
+    }
+
+    pub fn all() -> &'static [GameMode] {
+        &[GameMode::Marathon, GameMode::Sprint, GameMode::Ultra, GameMode::Versus]
+    }
+
+    pub fn is_multiplayer(&self) -> bool {
+        matches!(self, GameMode::Versus)
     }
 }
 
@@ -82,6 +99,8 @@ impl ModeState {
             GameMode::Marathon => false, // Never ends automatically
             GameMode::Sprint => lines_cleared >= self.target_lines,
             GameMode::Ultra => self.elapsed >= self.time_limit,
+            GameMode::Versus => false, // Ends when opponent tops out or we do
+            _ => false,
         }
     }
 

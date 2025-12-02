@@ -4,6 +4,7 @@ use crate::mode::GameMode;
 use crate::settings::Settings;
 
 /// Menu screens
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuScreen {
     Main,
@@ -13,6 +14,9 @@ pub enum MenuScreen {
     SettingsVisual,
     SettingsGameplay,
     SettingsAudio,
+    Multiplayer,
+    HostGame,
+    JoinGame,
 }
 
 /// Menu state
@@ -31,6 +35,7 @@ pub struct MenuItem {
     pub item_type: MenuItemType,
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone)]
 pub enum MenuItemType {
     /// Simple button that triggers an action
@@ -43,8 +48,13 @@ pub enum MenuItemType {
     Number { key: SettingKey, value: u64, min: u64, max: u64, step: u64 },
     /// Key binding (shows current keys, can rebind)
     KeyBind { action: String, keys: Vec<String> },
+    /// Text input field
+    TextInput { value: String, placeholder: String },
+    /// Display-only label (not selectable)
+    Label { text: String },
 }
 
+#[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MenuAction {
     StartGame(GameMode),
@@ -52,6 +62,10 @@ pub enum MenuAction {
     Back,
     Quit,
     SaveSettings,
+    /// Host a multiplayer game
+    HostGame,
+    /// Join with the entered ticket
+    JoinGame,
 }
 
 /// Setting keys for identifying which setting to modify
@@ -112,10 +126,132 @@ impl Menu {
                     item_type: MenuItemType::Button(MenuAction::StartGame(GameMode::Ultra)),
                 },
                 MenuItem {
+                    label: "Versus (Online)".to_string(),
+                    item_type: MenuItemType::Button(MenuAction::GoToScreen(MenuScreen::Multiplayer)),
+                },
+                MenuItem {
                     label: "Back".to_string(),
                     item_type: MenuItemType::Button(MenuAction::Back),
                 },
             ],
+        }
+    }
+
+    pub fn multiplayer_menu() -> Self {
+        Self {
+            screen: MenuScreen::Multiplayer,
+            selected: 0,
+            rebinding: None,
+            items: vec![
+                MenuItem {
+                    label: "Host Game".to_string(),
+                    item_type: MenuItemType::Button(MenuAction::GoToScreen(MenuScreen::HostGame)),
+                },
+                MenuItem {
+                    label: "Join Game".to_string(),
+                    item_type: MenuItemType::Button(MenuAction::GoToScreen(MenuScreen::JoinGame)),
+                },
+                MenuItem {
+                    label: "Back".to_string(),
+                    item_type: MenuItemType::Button(MenuAction::Back),
+                },
+            ],
+        }
+    }
+
+    pub fn host_game_menu(ticket: Option<&str>) -> Self {
+        let mut items = vec![];
+
+        if let Some(t) = ticket {
+            items.push(MenuItem {
+                label: "Ticket".to_string(),
+                item_type: MenuItemType::Label { text: t.to_string() },
+            });
+            items.push(MenuItem {
+                label: "Waiting for opponent...".to_string(),
+                item_type: MenuItemType::Label { text: String::new() },
+            });
+        } else {
+            items.push(MenuItem {
+                label: "Start Hosting".to_string(),
+                item_type: MenuItemType::Button(MenuAction::HostGame),
+            });
+        }
+
+        items.push(MenuItem {
+            label: "Back".to_string(),
+            item_type: MenuItemType::Button(MenuAction::Back),
+        });
+
+        Self {
+            screen: MenuScreen::HostGame,
+            selected: if ticket.is_some() { items.len() - 1 } else { 0 },
+            rebinding: None,
+            items,
+        }
+    }
+
+    pub fn join_game_menu() -> Self {
+        Self {
+            screen: MenuScreen::JoinGame,
+            selected: 0,
+            rebinding: None,
+            items: vec![
+                MenuItem {
+                    label: "Ticket".to_string(),
+                    item_type: MenuItemType::TextInput {
+                        value: String::new(),
+                        placeholder: "Paste ticket here".to_string(),
+                    },
+                },
+                MenuItem {
+                    label: "Connect".to_string(),
+                    item_type: MenuItemType::Button(MenuAction::JoinGame),
+                },
+                MenuItem {
+                    label: "Back".to_string(),
+                    item_type: MenuItemType::Button(MenuAction::Back),
+                },
+            ],
+        }
+    }
+
+    /// Get ticket input value from JoinGame menu
+    pub fn get_ticket_input(&self) -> Option<String> {
+        for item in &self.items {
+            if let MenuItemType::TextInput { value, .. } = &item.item_type {
+                if !value.is_empty() {
+                    return Some(value.clone());
+                }
+            }
+        }
+        None
+    }
+
+    /// Add character to text input
+    pub fn text_input_char(&mut self, c: char) {
+        if let Some(item) = self.items.get_mut(self.selected) {
+            if let MenuItemType::TextInput { value, .. } = &mut item.item_type {
+                value.push(c);
+            }
+        }
+    }
+
+    /// Backspace on text input
+    pub fn text_input_backspace(&mut self) {
+        if let Some(item) = self.items.get_mut(self.selected) {
+            if let MenuItemType::TextInput { value, .. } = &mut item.item_type {
+                value.pop();
+            }
+        }
+    }
+
+    /// Paste text into input
+    pub fn text_input_paste(&mut self, text: &str) {
+        if let Some(item) = self.items.get_mut(self.selected) {
+            if let MenuItemType::TextInput { value, .. } = &mut item.item_type {
+                value.push_str(text);
+            }
         }
     }
 
@@ -480,6 +616,10 @@ impl Menu {
             MenuScreen::SettingsVisual => Self::settings_visual(settings),
             MenuScreen::SettingsGameplay => Self::settings_gameplay(settings),
             MenuScreen::SettingsAudio => Self::settings_audio(settings),
+            MenuScreen::Multiplayer => Self::multiplayer_menu(),
+            MenuScreen::HostGame => Self::host_game_menu(None),
+            MenuScreen::JoinGame => Self::join_game_menu(),
+            _ => Self::main_menu(),
         };
     }
 
@@ -493,6 +633,10 @@ impl Menu {
             MenuScreen::SettingsVisual => MenuScreen::Settings,
             MenuScreen::SettingsGameplay => MenuScreen::Settings,
             MenuScreen::SettingsAudio => MenuScreen::Settings,
+            MenuScreen::Multiplayer => MenuScreen::ModeSelect,
+            MenuScreen::HostGame => MenuScreen::Multiplayer,
+            MenuScreen::JoinGame => MenuScreen::Multiplayer,
+            _ => MenuScreen::Main,
         };
         self.go_to(prev, settings);
     }

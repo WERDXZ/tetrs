@@ -5,13 +5,16 @@
 
 use crate::tetromino::TetrominoType;
 use rand::seq::SliceRandom;
-use rand::thread_rng;
+use rand::SeedableRng;
+use rand_chacha::ChaCha8Rng;
 
 /// The 7-bag piece randomizer
 #[derive(Debug, Clone)]
 pub struct Bag {
     /// Preview queue for upcoming pieces
     queue: Vec<TetrominoType>,
+    /// Seeded RNG for deterministic piece generation
+    rng: ChaCha8Rng,
 }
 
 impl Default for Bag {
@@ -21,10 +24,16 @@ impl Default for Bag {
 }
 
 impl Bag {
-    /// Create a new bag randomizer with initial queue
+    /// Create a new bag randomizer with random seed
     pub fn new() -> Self {
+        Self::with_seed(rand::random())
+    }
+
+    /// Create a new bag with specific seed (for multiplayer sync)
+    pub fn with_seed(seed: u64) -> Self {
         let mut bag = Self {
             queue: Vec::with_capacity(14),
+            rng: ChaCha8Rng::seed_from_u64(seed),
         };
         // Fill the queue with at least 2 full bags
         bag.refill();
@@ -49,7 +58,7 @@ impl Bag {
     /// Refill the queue with a new shuffled bag
     fn refill(&mut self) {
         let mut new_bag = TetrominoType::all().to_vec();
-        new_bag.shuffle(&mut thread_rng());
+        new_bag.shuffle(&mut self.rng);
         self.queue.extend(new_bag);
     }
 }

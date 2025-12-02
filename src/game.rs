@@ -8,6 +8,15 @@ use crate::score::{ClearType, Score};
 use crate::tetromino::{RotationDirection, TetrominoType};
 use std::time::{Duration, Instant};
 
+/// Info about the last line clear (for garbage calculation in multiplayer)
+#[derive(Debug, Clone)]
+pub struct ClearInfo {
+    pub lines: u8,
+    pub is_tspin: bool,
+    pub combo: i32,
+    pub back_to_back: bool,
+}
+
 /// Lock delay settings
 const LOCK_DELAY: Duration = Duration::from_millis(500);
 const MAX_LOCK_RESETS: u8 = 15;
@@ -68,12 +77,21 @@ pub struct Game {
     soft_drop_distance: u32,
     /// Countdown timer
     countdown_start: Option<Instant>,
+    /// Flag set when a piece is locked (for multiplayer sync)
+    pub piece_just_locked: bool,
+    /// Last line clear info for garbage calculation
+    pub last_clear_info: Option<ClearInfo>,
 }
 
 impl Game {
     /// Create a new game with specified mode
     pub fn new(mode: GameMode) -> Self {
-        let mut bag = Bag::new();
+        Self::with_seed(mode, rand::random())
+    }
+
+    /// Create a new game with specified mode and seed (for multiplayer)
+    pub fn with_seed(mode: GameMode, seed: u64) -> Self {
+        let mut bag = Bag::with_seed(seed);
         let first_piece = bag.next();
         let mut score = Score::new();
         score.level = mode.starting_level();
@@ -94,6 +112,8 @@ impl Game {
             last_action: None,
             soft_drop_distance: 0,
             countdown_start: Some(Instant::now()),
+            piece_just_locked: false,
+            last_clear_info: None,
         }
     }
 
@@ -172,6 +192,8 @@ impl Game {
                 GameMode::Sprint => GameState::Victory,
                 GameMode::Ultra => GameState::GameOver, // Time's up
                 GameMode::Marathon => GameState::Playing, // Never ends
+                GameMode::Versus => GameState::Playing, // Ends when opponent disconnects/loses
+                _ => GameState::Playing,
             };
             if self.state != GameState::Playing {
                 return;
@@ -319,6 +341,9 @@ impl Game {
         let lines_cleared = self.board.clear_lines();
         let all_clear = self.board.is_empty();
 
+        // Track back-to-back before scoring updates it
+        let was_back_to_back = self.score.back_to_back;
+
         // Calculate score
         if lines_cleared > 0 || is_t_spin.is_some() {
             let clear_type = match is_t_spin {
@@ -327,10 +352,22 @@ impl Game {
                 None => ClearType::Regular(lines_cleared as u8),
             };
             self.last_action = Some(self.score.add_clear(clear_type, all_clear));
+
+            // Store clear info for garbage calculation
+            self.last_clear_info = Some(ClearInfo {
+                lines: lines_cleared as u8,
+                is_tspin: is_t_spin.is_some(),
+                combo: self.score.combo,
+                back_to_back: was_back_to_back && (lines_cleared == 4 || is_t_spin.is_some()),
+            });
         } else {
             self.score.reset_combo();
             self.last_action = None;
+            self.last_clear_info = None;
         }
+
+        // Flag that piece was locked (for multiplayer sync)
+        self.piece_just_locked = true;
 
         // Spawn next piece
         let next_type = self.bag.next();
