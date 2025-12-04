@@ -21,6 +21,7 @@ mod tetromino;
 mod ui;
 
 use audio::{AudioManager, BgmTrack, Sfx};
+use copypasta::{ClipboardContext, ClipboardProvider};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind},
     execute,
@@ -36,12 +37,15 @@ use ratatui::{backend::CrosstermBackend, layout::Rect, Terminal};
 use settings::Settings;
 use std::{
     io::{self, stdout},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 /// Target frame rate
 const TARGET_FPS: u64 = 60;
 const FRAME_DURATION: Duration = Duration::from_micros(1_000_000 / TARGET_FPS);
+
+/// Input delay after game over to prevent accidental menu return
+const GAME_OVER_INPUT_DELAY: Duration = Duration::from_secs(2);
 
 /// Application state
 enum AppState {
@@ -56,6 +60,78 @@ fn tetrs_temp_dir() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join("tetrs");
     let _ = std::fs::create_dir_all(&dir);
     dir
+}
+
+/// Cross-platform clipboard write
+fn clipboard_set(text: &str) -> Result<(), String> {
+    // On Linux, try wl-clipboard-rs first (works for terminal apps on Wayland)
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        use wl_clipboard_rs::copy::{MimeType, Options, Source};
+        let opts = Options::new();
+        match opts.copy(Source::Bytes(text.as_bytes().into()), MimeType::Text) {
+            Ok(_) => {
+                tracing::info!("Copied to clipboard via wl-clipboard-rs");
+                return Ok(());
+            }
+            Err(e) => {
+                tracing::debug!("wl-clipboard-rs failed (maybe X11?): {}", e);
+            }
+        }
+    }
+
+    // Fallback to copypasta (works on X11, macOS, Windows)
+    match ClipboardContext::new() {
+        Ok(mut ctx) => match ctx.set_contents(text.to_owned()) {
+            Ok(_) => {
+                tracing::info!("Copied to clipboard via copypasta");
+                Ok(())
+            }
+            Err(e) => {
+                tracing::warn!("copypasta set_contents failed: {}", e);
+                Err(e.to_string())
+            }
+        },
+        Err(e) => {
+            tracing::warn!("ClipboardContext::new failed: {}", e);
+            Err(e.to_string())
+        }
+    }
+}
+
+/// Cross-platform clipboard read
+fn clipboard_get() -> Option<String> {
+    // On Linux, try wl-clipboard-rs first (works for terminal apps on Wayland)
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        use wl_clipboard_rs::paste::{get_contents, ClipboardType, MimeType, Seat};
+        match get_contents(ClipboardType::Regular, Seat::Unspecified, MimeType::Text) {
+            Ok((mut reader, _)) => {
+                let mut text = String::new();
+                if std::io::Read::read_to_string(&mut reader, &mut text).is_ok() && !text.is_empty()
+                {
+                    tracing::info!("Read from clipboard via wl-clipboard-rs");
+                    return Some(text);
+                }
+            }
+            Err(e) => {
+                tracing::debug!("wl-clipboard-rs paste failed (maybe X11?): {}", e);
+            }
+        }
+    }
+
+    // Fallback to copypasta (works on X11, macOS, Windows)
+    if let Ok(mut ctx) = ClipboardContext::new() {
+        if let Ok(contents) = ctx.get_contents() {
+            if !contents.is_empty() {
+                tracing::info!("Read from clipboard via copypasta");
+                return Some(contents);
+            }
+        }
+    }
+
+    tracing::warn!("All clipboard read methods failed");
+    None
 }
 
 fn main() -> io::Result<()> {
@@ -144,6 +220,7 @@ fn run_app(
     let mut last_game: Option<Game> = None;
     let mut last_countdown: Option<u8> = None;
     let mut last_action_text: Option<String> = None;
+    let mut game_over_time: Option<Instant> = None;
 
     loop {
         // Render
@@ -289,17 +366,23 @@ fn run_app(
 
                                                 match multiplayer::spawn_host(rt, our_name, seed) {
                                                     Ok((ticket, cmd_tx, event_rx)) => {
-                                                        // Write ticket to file in tetrs temp dir
+                                                        // Copy ticket to clipboard
+                                                        // Always write to file as backup
                                                         let ticket_path = tetrs_temp_dir().join("ticket.txt");
                                                         let _ = std::fs::write(&ticket_path, &ticket);
-                                                        let ticket_info = format!("Saved to: {}", ticket_path.display());
+
+                                                        // Try clipboard, use wl-copy as fallback on Wayland
+                                                        let clipboard_status = match clipboard_set(&ticket) {
+                                                            Ok(_) => "Copied to clipboard!".to_string(),
+                                                            Err(_) => format!("Saved to: {}", ticket_path.display()),
+                                                        };
 
                                                         // Create session
                                                         let mut session = MultiplayerSession::new(Role::Host);
                                                         session.game_seed = seed;
                                                         session.set_channels(cmd_tx, event_rx);
                                                         session.state = multiplayer::ConnectionState::WaitingForOpponent {
-                                                            ticket: format!("{}\n{}", ticket, ticket_info)
+                                                            ticket: format!("{}\n{}", ticket, clipboard_status)
                                                         };
 
                                                         // Create game with our seed
@@ -313,16 +396,21 @@ fn run_app(
                                                 }
                                             }
                                             MenuAction::JoinGame => {
-                                                // Get ticket from text input
-                                                if let Some(input_ticket) = menu.get_ticket_input() {
+                                                // Get ticket from text input, clipboard, or file
+                                                let input_ticket = menu.get_ticket_input();
+                                                let ticket = if let Some(t) = input_ticket.filter(|s| !s.is_empty()) {
                                                     // Check if it's a file path and read contents
-                                                    let ticket = if std::path::Path::new(&input_ticket).exists() {
-                                                        std::fs::read_to_string(&input_ticket)
-                                                            .unwrap_or(input_ticket)
+                                                    if std::path::Path::new(&t).exists() {
+                                                        std::fs::read_to_string(&t).unwrap_or(t)
                                                     } else {
-                                                        input_ticket
-                                                    };
+                                                        t
+                                                    }
+                                                } else {
+                                                    // Try clipboard if no input
+                                                    clipboard_get().unwrap_or_default()
+                                                };
 
+                                                if !ticket.is_empty() {
                                                     let our_name = "Player".to_string();
 
                                                     match multiplayer::spawn_join(rt, ticket, our_name) {
@@ -369,31 +457,37 @@ fn run_app(
                             }
                         }
                         AppState::Playing(game, input) => {
-                            // Process input
-                            let actions = input.key_down(key);
-                            for action in actions {
-                                game.process_action(action);
-                            }
-
                             // Check for game end
                             match game.state {
                                 GameState::GameOver | GameState::Victory => {
-                                    // Save high score
-                                    save_high_score(game, settings);
-
-                                    // Stop BGM
-                                    if let Some(audio) = audio {
-                                        audio.stop_bgm();
+                                    // Track when game ended
+                                    if game_over_time.is_none() {
+                                        game_over_time = Some(Instant::now());
+                                        // Save high score
+                                        save_high_score(game, settings);
+                                        // Stop BGM
+                                        if let Some(audio) = audio {
+                                            audio.stop_bgm();
+                                        }
                                     }
 
-                                    // Any key returns to menu
-                                    last_game = Some(std::mem::replace(
-                                        game,
-                                        Game::new(GameMode::Marathon),
-                                    ));
-                                    state = AppState::Menu(Menu::new());
+                                    // Only allow return to menu after delay
+                                    if game_over_time.map_or(false, |t| t.elapsed() >= GAME_OVER_INPUT_DELAY) {
+                                        last_game = Some(std::mem::replace(
+                                            game,
+                                            Game::new(GameMode::Marathon),
+                                        ));
+                                        state = AppState::Menu(Menu::new());
+                                        game_over_time = None;
+                                    }
                                 }
-                                _ => {}
+                                _ => {
+                                    // Process input only if game is still active
+                                    let actions = input.key_down(key);
+                                    for action in actions {
+                                        game.process_action(action);
+                                    }
+                                }
                             }
                         }
                         AppState::Versus(game, input, session) => {
@@ -426,16 +520,25 @@ fn run_app(
                                 if let Some(audio) = audio {
                                     audio.stop_bgm();
                                 }
+                                game_over_time = None;
                                 true
                             } else if matches!(session.state, multiplayer::ConnectionState::GameOver { .. }) {
-                                if let Some(audio) = audio {
-                                    audio.stop_bgm();
+                                // Track when game ended
+                                if game_over_time.is_none() {
+                                    game_over_time = Some(Instant::now());
+                                    if let Some(audio) = audio {
+                                        audio.stop_bgm();
+                                    }
                                 }
-                                last_game = Some(std::mem::replace(
-                                    game,
-                                    Game::new(GameMode::Marathon),
-                                ));
-                                true
+
+                                // Only allow return to lobby after delay
+                                if game_over_time.map_or(false, |t| t.elapsed() >= GAME_OVER_INPUT_DELAY) {
+                                    // Reset to lobby for rematch instead of menu
+                                    session.reset_for_rematch();
+                                    *game = Game::with_seed(GameMode::Versus, session.game_seed);
+                                    game_over_time = None;
+                                }
+                                false // Don't return to menu
                             } else {
                                 false
                             }

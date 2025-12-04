@@ -201,7 +201,7 @@ impl Menu {
                     label: "Ticket".to_string(),
                     item_type: MenuItemType::TextInput {
                         value: String::new(),
-                        placeholder: "Paste ticket here".to_string(),
+                        placeholder: "Empty = use clipboard".to_string(),
                     },
                 },
                 MenuItem {

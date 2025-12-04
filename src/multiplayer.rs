@@ -8,8 +8,8 @@
 //! 5. On game over: send result
 
 use crate::board::{Board, Cell, BOARD_HEIGHT, BOARD_WIDTH};
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use iroh::{Endpoint, NodeAddr};
+use iroh_base::ticket::NodeTicket;
 use serde::{Deserialize, Serialize};
 use std::sync::mpsc;
 use tokio::io::AsyncReadExt;
@@ -251,6 +251,11 @@ impl MultiplayerSession {
                 return false; // Already ready
             }
             self.state = ConnectionState::Lobby { we_ready: true, they_ready };
+
+            // Host sends new seed when readying up (for rematch)
+            if self.role == Role::Host {
+                self.send(GameMessage::Seed { seed: self.game_seed });
+            }
             self.send(GameMessage::Ready);
 
             // If both ready and we're host, start countdown
@@ -395,6 +400,25 @@ impl MultiplayerSession {
         self.event_rx = None;
     }
 
+    /// Reset session state for rematch (go back to lobby)
+    pub fn reset_for_rematch(&mut self) {
+        self.state = ConnectionState::Lobby {
+            we_ready: false,
+            they_ready: false,
+        };
+        self.opponent.game_over = false;
+        self.opponent.score = 0;
+        self.opponent.lines = 0;
+        self.opponent.level = 1;
+        self.opponent.board = [[Cell::Empty; BOARD_WIDTH]; BOARD_HEIGHT];
+        self.pending_garbage = 0;
+        self.countdown_start = None;
+        // Generate new seed for host
+        if self.role == Role::Host {
+            self.game_seed = rand::random();
+        }
+    }
+
     /// Set the channels for network communication
     pub fn set_channels(
         &mut self,
@@ -500,15 +524,8 @@ pub async fn start_hosting(
         }
     };
 
-    // Serialize NodeAddr to JSON then base64 encode for shorter ticket
-    let json = match serde_json::to_string(&node_addr) {
-        Ok(j) => j,
-        Err(e) => {
-            let _ = ticket_tx.send(Err(format!("Failed to serialize ticket: {}", e)));
-            return;
-        }
-    };
-    let ticket = URL_SAFE_NO_PAD.encode(json.as_bytes());
+    // Create a proper NodeTicket from the address
+    let ticket = NodeTicket::new(node_addr).to_string();
     info!("Generated ticket (len={})", ticket.len());
 
     // Send ticket back to main thread
@@ -587,19 +604,14 @@ pub async fn join_game(
     info!("Guest joining game, ticket len={}", ticket.len());
     debug!("Guest ticket: {}", ticket.trim());
 
-    // Decode base64 ticket then parse as JSON
-    let json_bytes = URL_SAFE_NO_PAD.decode(ticket.trim())
+    // Parse the NodeTicket
+    let node_ticket: NodeTicket = ticket.trim().parse()
         .map_err(|e| {
-            error!("Invalid ticket encoding: {}", e);
-            format!("Invalid ticket encoding: {}", e)
+            error!("Invalid ticket: {}", e);
+            format!("Invalid ticket: {}", e)
         })?;
-    let json = String::from_utf8(json_bytes)
-        .map_err(|e| format!("Invalid ticket data: {}", e))?;
-    debug!("Guest decoded ticket JSON: {}", json);
 
-    let node_addr: NodeAddr = serde_json::from_str(&json)
-        .map_err(|e| format!("Invalid ticket: {}", e))?;
-
+    let node_addr: NodeAddr = node_ticket.node_addr().clone();
     let direct_addrs: Vec<_> = node_addr.direct_addresses().collect();
     info!("Guest parsed ticket, node_id={}, relay_url={:?}, direct_addrs={:?}",
         node_addr.node_id,
