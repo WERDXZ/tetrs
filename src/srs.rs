@@ -50,29 +50,30 @@ fn jlstz_kicks(from: Rotation, direction: RotationDirection) -> [(i32, i32); 5] 
 }
 
 /// Wall kicks for I piece (different from other pieces)
-/// Standard SRS with row-up coordinate system (row offsets negated from spec)
+/// Standard SRS: (row_offset, col_offset) where row+ is up, col+ is right
 fn i_piece_kicks(from: Rotation, direction: RotationDirection) -> [(i32, i32); 5] {
     use Rotation::*;
     use RotationDirection::*;
 
     // Kicks are (row_offset, col_offset) where row+ is up, col+ is right
+    // SRS wiki format (x, y) maps to (y, x) = (row, col)
     match (from, direction) {
-        // 0→R (North → East CW)
-        (North, Clockwise) => [(0, 0), (0, -2), (0, 1), (1, -2), (-2, 1)],
-        // R→0 (East → North CCW)
-        (East, CounterClockwise) => [(0, 0), (0, 2), (0, -1), (-1, 2), (2, -1)],
-        // R→2 (East → South CW)
-        (East, Clockwise) => [(0, 0), (0, -1), (0, 2), (-1, -1), (2, 2)],
-        // 2→R (South → East CCW)
-        (South, CounterClockwise) => [(0, 0), (0, 1), (0, -2), (1, 1), (-2, -2)],
-        // 2→L (South → West CW)
+        // 0→R (North → East CW): (0,0), (-2,0), (+1,0), (-2,-1), (+1,+2)
+        (North, Clockwise) => [(0, 0), (0, -2), (0, 1), (-1, -2), (2, 1)],
+        // R→0 (East → North CCW): (0,0), (+2,0), (-1,0), (+2,+1), (-1,-2)
+        (East, CounterClockwise) => [(0, 0), (0, 2), (0, -1), (1, 2), (-2, -1)],
+        // R→2 (East → South CW): (0,0), (-1,0), (+2,0), (-1,+2), (+2,-1)
+        (East, Clockwise) => [(0, 0), (0, -1), (0, 2), (2, -1), (-1, 2)],
+        // 2→R (South → East CCW): (0,0), (+1,0), (-2,0), (+1,-2), (-2,+1)
+        (South, CounterClockwise) => [(0, 0), (0, 1), (0, -2), (-2, 1), (1, -2)],
+        // 2→L (South → West CW): (0,0), (+2,0), (-1,0), (+2,+1), (-1,-2)
         (South, Clockwise) => [(0, 0), (0, 2), (0, -1), (1, 2), (-2, -1)],
-        // L→2 (West → South CCW)
+        // L→2 (West → South CCW): (0,0), (-2,0), (+1,0), (-2,-1), (+1,+2)
         (West, CounterClockwise) => [(0, 0), (0, -2), (0, 1), (-1, -2), (2, 1)],
-        // L→0 (West → North CW)
-        (West, Clockwise) => [(0, 0), (0, 1), (0, -2), (1, 1), (-2, -2)],
-        // 0→L (North → West CCW)
-        (North, CounterClockwise) => [(0, 0), (0, -1), (0, 2), (-1, -1), (2, 2)],
+        // L→0 (West → North CW): (0,0), (+1,0), (-2,0), (+1,-2), (-2,+1)
+        (West, Clockwise) => [(0, 0), (0, 1), (0, -2), (-2, 1), (1, -2)],
+        // 0→L (North → West CCW): (0,0), (-1,0), (+2,0), (-1,+2), (+2,-1)
+        (North, CounterClockwise) => [(0, 0), (0, -1), (0, 2), (2, -1), (-1, 2)],
     }
 }
 
